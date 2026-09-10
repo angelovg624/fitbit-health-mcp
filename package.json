@@ -1,0 +1,22 @@
+{
+  "name": "fitbit-health-mcp",
+  "version": "1.0.0",
+  "description": "Servidor MCP personal para exponer datos de sueño/salud de Fitbit (vía Google Health API v4) a Claude",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "auth": "node scripts/setup-oauth.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.0",
+    "zod": "^3.23.8",
+    "dotenv": "^16.4.5",
+    "open": "^10.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
