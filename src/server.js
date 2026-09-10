@@ -161,6 +161,12 @@ function buildMcpServer() {
 const app = express();
 app.use(express.json());
 
+// Log de cada request entrante, para diagnosticar conectividad (Render, Claude, etc.)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} — auth header presente: ${Boolean(req.headers["authorization"])}`);
+  next();
+});
+
 // Auth simple por bearer token estático (independiente del OAuth de Google).
 // Este es el secreto que le das a Claude al agregar el custom connector.
 app.use("/mcp", (req, res, next) => {
