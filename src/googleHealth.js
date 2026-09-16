@@ -88,12 +88,33 @@ async function listDataPoints({
   return allPoints;
 }
 
-/** Construye un filtro `civil_start_time >= "YYYY-MM-DDT00:00:00"` para N días atrás. */
-function daysBackFilter(dataTypeSnakeCase, daysBack, timeField = "civil_start_time") {
+/**
+ * Construye el filtro AIP-160 correcto según el record type de Google Health API
+ * (ver https://developers.google.com/health/filters):
+ * - "interval" (steps, sleep, exercise...): {type}.interval.{field} >= "ISO"
+ * - "sample"   (heart-rate, weight...):     {type}.sample_time.{field} >= "ISO"
+ * - "daily"    (daily-heart-rate-variability, daily-resting-heart-rate...): {type}.date >= "YYYY-MM-DD"
+ */
+function daysBackFilter(dataTypeSnakeCase, daysBack, { recordType = "interval", field } = {}) {
   const from = new Date();
   from.setDate(from.getDate() - daysBack);
-  const iso = from.toISOString().slice(0, 19); // sin milisegundos/Z
-  return `${dataTypeSnakeCase}.interval.${timeField} >= "${iso}"`;
+
+  if (recordType === "daily") {
+    const dateStr = from.toISOString().slice(0, 10); // YYYY-MM-DD, sin hora
+    return `${dataTypeSnakeCase}.date >= "${dateStr}"`;
+  }
+
+  if (recordType === "sample") {
+    const timeField = field || "civil_time";
+    const value =
+      timeField === "physical_time" ? from.toISOString() : from.toISOString().slice(0, 19);
+    return `${dataTypeSnakeCase}.sample_time.${timeField} >= "${value}"`;
+  }
+
+  // "interval" (incluye el caso especial de sleep, que es Session pero usa esta misma forma)
+  const timeField = field || "civil_start_time";
+  const value = timeField.startsWith("civil") ? from.toISOString().slice(0, 19) : from.toISOString();
+  return `${dataTypeSnakeCase}.interval.${timeField} >= "${value}"`;
 }
 
 export { getAccessToken, listDataPoints, daysBackFilter, API_BASE };

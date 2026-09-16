@@ -36,7 +36,7 @@ function summarizeSleepSession(dp) {
 }
 
 async function fetchSleepSessions(daysBack) {
-  const filter = daysBackFilter("sleep", daysBack, "civil_end_time");
+  const filter = daysBackFilter("sleep", daysBack, { recordType: "interval", field: "civil_end_time" });
   const points = await listDataPoints({
     dataType: "sleep",
     filter,
@@ -94,18 +94,15 @@ function buildMcpServer() {
 
   server.tool(
     "get_recovery_vitals",
-    "Devuelve métricas de recuperación fisiológica durante el sueño de los últimos N días: HRV diario, SpO2 diario, frecuencia respiratoria y frecuencia cardíaca en reposo. Combínalo con get_sleep_summary para evaluar calidad de descanso.",
+    "Devuelve métricas de recuperación fisiológica de los últimos N días: HRV diario, SpO2 diario, frecuencia respiratoria diaria y frecuencia cardíaca en reposo diaria. Combínalo con get_sleep_summary para evaluar calidad de descanso.",
     { days_back: z.number().int().min(1).max(60).default(7) },
     async ({ days_back }) => {
       const results = {};
+      // Los 4 son dataTypes tipo "Daily" en Google Health API: se filtran por fecha (.date), no por interval/sample.
       const dataTypes = [
         { key: "hrv", dataType: "daily-heart-rate-variability", snake: "daily_heart_rate_variability" },
         { key: "spo2", dataType: "daily-oxygen-saturation", snake: "daily_oxygen_saturation" },
-        {
-          key: "respiratoryRate",
-          dataType: "respiratory-rate-sleep-summary",
-          snake: "respiratory_rate_sleep_summary",
-        },
+        { key: "respiratoryRate", dataType: "daily-respiratory-rate", snake: "daily_respiratory_rate" },
         {
           key: "restingHeartRate",
           dataType: "daily-resting-heart-rate",
@@ -115,12 +112,11 @@ function buildMcpServer() {
 
       for (const dt of dataTypes) {
         try {
-          const filter = daysBackFilter(dt.snake, days_back, "civil_start_time");
-          const points = await listDataPoints({ dataType: dt.dataType, filter });
+          const filter = daysBackFilter(dt.snake, days_back, { recordType: "daily" });
+          const points = await listDataPoints({ dataType: dt.dataType, filter, useReconcile: true });
           results[dt.key] = points;
         } catch (err) {
-          // Si un data type no aplica a tu dispositivo o el nombre exacto difiere,
-          // no tumbamos toda la respuesta — lo marcamos y seguimos.
+          // Si un data type no aplica a tu dispositivo, no tumbamos toda la respuesta.
           results[dt.key] = { error: err.message };
         }
       }
@@ -130,19 +126,42 @@ function buildMcpServer() {
   );
 
   server.tool(
+    "get_heart_rate_raw",
+    "Devuelve la serie de frecuencia cardíaca punto por punto (beats per minute, con contexto de movimiento) de los últimos N días. Son datos crudos de alta frecuencia, no un resumen — usa un rango corto (1-3 días) para no traer demasiados puntos.",
+    { days_back: z.number().int().min(1).max(7).default(1) },
+    async ({ days_back }) => {
+      const filter = daysBackFilter("heart_rate", days_back, { recordType: "sample" });
+      const points = await listDataPoints({
+        dataType: "heart-rate",
+        filter,
+        dataSourceFamily: DEFAULT_FAMILY,
+        maxPages: 5,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(points, null, 2) }] };
+    }
+  );
+
+  server.tool(
     "get_health_data_raw",
-    "Escape hatch: consulta cualquier dataType de Google Health API directamente (list o reconcile) para casos no cubiertos por las otras tools. Usa el nombre del dataType en kebab-case (ej. 'heart-rate', 'steps', 'oxygen-saturation'). Útil si Claude necesita un dato que no está en las tools dedicadas.",
+    "Escape hatch: consulta cualquier dataType de Google Health API directamente. Usa el nombre del dataType en kebab-case (ej. 'heart-rate', 'body-fat', 'daily-heart-rate-variability'). IMPORTANTE: especifica record_kind según el tipo de dato — 'daily' para métricas con resumen diario (daily-*), 'sample' para mediciones puntuales (heart-rate, weight, oxygen-saturation, body-fat), 'interval' para datos con duración (steps, distance, exercise). Ver https://developers.google.com/health/data-types para el record type de cada dataType.",
     {
       data_type: z.string().describe("dataType en kebab-case, ej. 'heart-rate'"),
       days_back: z.number().int().min(1).max(90).default(7),
+      record_kind: z
+        .enum(["interval", "sample", "daily"])
+        .default("interval")
+        .describe("'daily' para daily-*, 'sample' para mediciones puntuales, 'interval' para datos con duración"),
       time_field: z
-        .enum(["civil_start_time", "civil_end_time"])
-        .default("civil_start_time"),
+        .string()
+        .optional()
+        .describe(
+          "Campo de tiempo dentro del record_kind. interval: 'civil_start_time' (default) o 'civil_end_time'. sample: 'civil_time' (default) o 'physical_time'. Ignorado si record_kind es 'daily'."
+        ),
       use_reconcile: z.boolean().default(false),
     },
-    async ({ data_type, days_back, time_field, use_reconcile }) => {
+    async ({ data_type, days_back, record_kind, time_field, use_reconcile }) => {
       const snake = data_type.replace(/-/g, "_");
-      const filter = daysBackFilter(snake, days_back, time_field);
+      const filter = daysBackFilter(snake, days_back, { recordType: record_kind, field: time_field });
       const points = await listDataPoints({
         dataType: data_type,
         filter,
@@ -162,6 +181,13 @@ const app = express();
 app.use(express.json());
 
 // Log de cada request entrante, para diagnosticar conectividad (Render, Claude, etc.)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} — auth header presente: ${Boolean(req.headers["authorization"])}`);
+  next();
+});
+
+// Auth simple por bearer token estático (independiente del OAuth de Google).
+// Este es el secreto que le das a Claude al agregar el custom connector.
 app.use("/mcp", (req, res, next) => {
   const expected = process.env.MCP_SHARED_SECRET;
   if (!expected) {
@@ -177,21 +203,6 @@ app.use("/mcp", (req, res, next) => {
     return res.status(401).json({ error: "unauthorized" });
   }
   console.log("AUTH OK");
-  next();
-});
-
-// Auth simple por bearer token estático (independiente del OAuth de Google).
-// Este es el secreto que le das a Claude al agregar el custom connector.
-app.use("/mcp", (req, res, next) => {
-  const expected = process.env.MCP_SHARED_SECRET;
-  if (!expected) {
-    return res.status(500).json({ error: "MCP_SHARED_SECRET no configurado en el servidor" });
-  }
-  const header = req.headers["authorization"] || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-  if (token !== expected) {
-    return res.status(401).json({ error: "unauthorized" });
-  }
   next();
 });
 
