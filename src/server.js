@@ -134,6 +134,7 @@ function buildMcpServer() {
       const points = await listDataPoints({
         dataType: "heart-rate",
         filter,
+        useReconcile: true,
         dataSourceFamily: DEFAULT_FAMILY,
         maxPages: 5,
       });

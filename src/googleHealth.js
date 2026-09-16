@@ -66,7 +66,9 @@ async function listDataPoints({
   do {
     const params = new URLSearchParams();
     if (filter) params.set("filter", filter);
-    if (dataSourceFamily) params.set("dataSourceFamily", dataSourceFamily);
+    // dataSourceFamily solo lo soportan reconcile/rollUp/dailyRollUp — el endpoint "list" plano
+    // lo rechaza con 400 si se lo mandamos. Google Health API docs: /health/filters
+    if (dataSourceFamily && useReconcile) params.set("dataSourceFamily", dataSourceFamily);
     if (pageToken) params.set("pageToken", pageToken);
 
     const url = `${API_BASE}/users/me/dataTypes/${dataType}/dataPoints${op}?${params.toString()}`;
