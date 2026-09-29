@@ -105,10 +105,11 @@ async function dailyRollUp({ dataType, startDate, endDate, dataSourceFamily, max
 
   do {
     const body = {
+      // dailyRollUp espera CivilTimeInterval: range.start/end son CivilDateTime,
+      // y su "date" es un objeto {year, month, day}, no un string "YYYY-MM-DD".
       range: {
-        // dailyRollUp usa fechas civiles (YYYY-MM-DD), no timestamps con hora.
-        civilStartTime: { date: startDate },
-        civilEndTime: { date: endDate },
+        start: { date: dateStringToParts(startDate) },
+        end: { date: dateStringToParts(endDate) },
       },
     };
     if (dataSourceFamily) body.dataSourceFamily = dataSourceFamily;
@@ -166,6 +167,12 @@ function daysBackFilter(dataTypeSnakeCase, daysBack, { recordType = "interval", 
   const timeField = field || "civil_start_time";
   const value = timeField.startsWith("civil") ? from.toISOString().slice(0, 19) : from.toISOString();
   return `${dataTypeSnakeCase}.interval.${timeField} >= "${value}"`;
+}
+
+/** Convierte "YYYY-MM-DD" al objeto google.type.Date {year, month, day} que espera CivilDateTime. */
+function dateStringToParts(dateStr) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return { year, month, day };
 }
 
 /** Devuelve { startDate, endDate } en formato YYYY-MM-DD para los últimos N días (hoy incluido). */

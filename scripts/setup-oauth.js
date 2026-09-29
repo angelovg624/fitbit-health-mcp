@@ -27,6 +27,7 @@ const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/oauth2callback`;
 const SCOPES = [
   "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
   "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
 ].join(" ");
 
 const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
