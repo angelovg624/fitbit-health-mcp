@@ -3,7 +3,7 @@ import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { listDataPoints, daysBackFilter } from "./googleHealth.js";
+import { listDataPoints, dailyRollUp, daysBackFilter, daysBackDateRange } from "./googleHealth.js";
 
 const DEFAULT_FAMILY =
   process.env.DEFAULT_DATA_SOURCE_FAMILY || "users/me/dataSourceFamilies/google-wearables";
@@ -55,7 +55,7 @@ function average(nums) {
 // ---------- MCP server ----------
 
 function buildMcpServer() {
-  const server = new McpServer({ name: "fitbit-health", version: "1.0.0" });
+  const server = new McpServer({ name: "fitbit-health", version: "1.1.0" });
 
   server.tool(
     "get_sleep_sessions",
@@ -143,8 +143,48 @@ function buildMcpServer() {
   );
 
   server.tool(
+    "get_calories_burned",
+    "Devuelve las calorías quemadas por día de los últimos N días: total diario (basal + actividad) y, por separado, solo la energía activa (excluye metabolismo basal). Útil para responder '¿cuántas calorías quemo?' o para cruzarlo con la ingesta y evaluar déficit/superávit. Fuente: Google Health API, endpoint dailyRollUp (máx. 14 días por consulta).",
+    { days_back: z.number().int().min(1).max(14).default(7) },
+    async ({ days_back }) => {
+      const { startDate, endDate } = daysBackDateRange(days_back);
+      const results = {};
+
+      const dataTypes = [
+        { key: "totalCaloriesKcal", dataType: "total-calories", valueKey: "kcalSum" },
+        { key: "activeEnergyBurnedKcal", dataType: "active-energy-burned", valueKey: "kcalSum" },
+      ];
+
+      for (const dt of dataTypes) {
+        try {
+          const points = await dailyRollUp({
+            dataType: dt.dataType,
+            startDate,
+            endDate,
+            dataSourceFamily: DEFAULT_FAMILY,
+          });
+          results[dt.key] = points;
+        } catch (err) {
+          // total-calories y active-energy-burned pueden fallar por separado si tu dispositivo
+          // no reporta uno de los dos — no tumbamos toda la respuesta.
+          results[dt.key] = { error: err.message };
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ periodDays: days_back, startDate, endDate, ...results }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "get_health_data_raw",
-    "Escape hatch: consulta cualquier dataType de Google Health API directamente. Usa el nombre del dataType en kebab-case (ej. 'heart-rate', 'body-fat', 'daily-heart-rate-variability'). IMPORTANTE: especifica record_kind según el tipo de dato — 'daily' para métricas con resumen diario (daily-*), 'sample' para mediciones puntuales (heart-rate, weight, oxygen-saturation, body-fat), 'interval' para datos con duración (steps, distance, exercise). Ver https://developers.google.com/health/data-types para el record type de cada dataType.",
+    "Escape hatch: consulta cualquier dataType de Google Health API directamente. Usa el nombre del dataType en kebab-case (ej. 'heart-rate', 'body-fat', 'daily-heart-rate-variability'). IMPORTANTE: especifica record_kind según el tipo de dato — 'daily' para métricas con resumen diario (daily-*), 'sample' para mediciones puntuales (heart-rate, weight, oxygen-saturation, body-fat), 'interval' para datos con duración (steps, distance, exercise). Nota: 'total-calories' y 'active-energy-burned' NO funcionan con esta tool (requieren el endpoint dailyRollUp) — usa get_calories_burned para esos. Ver https://developers.google.com/health/data-types para el record type de cada dataType.",
     {
       data_type: z.string().describe("dataType en kebab-case, ej. 'heart-rate'"),
       days_back: z.number().int().min(1).max(90).default(7),

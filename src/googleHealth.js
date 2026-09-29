@@ -91,6 +91,55 @@ async function listDataPoints({
 }
 
 /**
+ * Llama al endpoint `dailyRollUp` (POST, no GET) — el único que soporta total-calories
+ * y active-energy-burned. A diferencia de listDataPoints, este NO usa `filter`:
+ * recibe un rango de fechas explícito en el body.
+ * Docs: https://developers.google.com/health/data-types/calories
+ *       https://developers.google.com/health/endpoints
+ */
+async function dailyRollUp({ dataType, startDate, endDate, dataSourceFamily, maxPages = 3 }) {
+  const accessToken = await getAccessToken();
+  const allPoints = [];
+  let pageToken;
+  let pages = 0;
+
+  do {
+    const body = {
+      range: {
+        // dailyRollUp usa fechas civiles (YYYY-MM-DD), no timestamps con hora.
+        civilStartTime: { date: startDate },
+        civilEndTime: { date: endDate },
+      },
+    };
+    if (dataSourceFamily) body.dataSourceFamily = dataSourceFamily;
+    if (pageToken) body.pageToken = pageToken;
+
+    const url = `${API_BASE}/users/me/dataTypes/${dataType}/dataPoints:dailyRollUp`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Google Health API error (${res.status}) en ${dataType} dailyRollUp: ${errBody}`);
+    }
+
+    const data = await res.json();
+    allPoints.push(...(data.rollupDataPoints || []));
+    pageToken = data.nextPageToken || undefined;
+    pages += 1;
+  } while (pageToken && pages < maxPages);
+
+  return allPoints;
+}
+
+/**
  * Construye el filtro AIP-160 correcto según el record type de Google Health API
  * (ver https://developers.google.com/health/filters):
  * - "interval" (steps, sleep, exercise...): {type}.interval.{field} >= "ISO"
@@ -119,4 +168,15 @@ function daysBackFilter(dataTypeSnakeCase, daysBack, { recordType = "interval", 
   return `${dataTypeSnakeCase}.interval.${timeField} >= "${value}"`;
 }
 
-export { getAccessToken, listDataPoints, daysBackFilter, API_BASE };
+/** Devuelve { startDate, endDate } en formato YYYY-MM-DD para los últimos N días (hoy incluido). */
+function daysBackDateRange(daysBack) {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - daysBack);
+  return {
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+  };
+}
+
+export { getAccessToken, listDataPoints, dailyRollUp, daysBackFilter, daysBackDateRange, API_BASE };
